@@ -29,7 +29,7 @@ class Action(AddPullRequestEventToDb, ForgejoEvent):
         actor: str,
         body: str,
     ):
-        super().__init__(project_url=project_url, pr_id=pr_id)
+        super().__init__(project_url=project_url, pr_id=pr_id, actor=actor)
         self.action = action
         self.base_repo_namespace = base_repo_namespace
         self.base_repo_name = base_repo_name
@@ -37,11 +37,6 @@ class Action(AddPullRequestEventToDb, ForgejoEvent):
         self.target_repo_namespace = target_repo_namespace
         self.target_repo_name = target_repo_name
         self.commit_sha = commit_sha
-        self.commit_sha_before = commit_sha_before
-        self.actor = actor
-        self.identifier = str(pr_id)
-        self._pr_id = pr_id
-        self.git_ref = None  # use pr_id for checkout
         self.body = body
 
     def get_dict(self, default_dict: Optional[dict] = None) -> dict:
@@ -55,8 +50,8 @@ class Action(AddPullRequestEventToDb, ForgejoEvent):
 
     def get_base_project(self) -> GitProject:
         return self.project.service.get_project(
-            namespace=self.target_repo_namespace,
-            repo=self.target_repo_name,
+            namespace=self.base_repo_namespace,
+            repo=self.base_repo_name,
         )
 
 
@@ -94,7 +89,6 @@ class Comment(AbstractPRCommentEvent, ForgejoEvent):
         self.actor = actor
         self.identifier = str(pr_id)
         self.git_ref = None
-        self.pr_id = pr_id
 
     @classmethod
     def event_type(cls) -> str:
@@ -116,6 +110,6 @@ class Comment(AbstractPRCommentEvent, ForgejoEvent):
 
     def get_base_project(self) -> GitProject:
         return self.project.service.get_project(
-            namespace=self.target_repo_namespace,
-            repo=self.target_repo_name,
+            namespace=self.base_repo_namespace,
+            repo=self.base_repo_name,
         )
