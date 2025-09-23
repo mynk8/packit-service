@@ -126,6 +126,10 @@ class Parser:
             gitlab.push.Commit,
             gitlab.push.Tag,
             gitlab.release.Release,
+            forgejo.pr.Comment,
+            forgejo.pr.Action,
+            forgejo.push.Commit,
+            forgejo.issue.Comment,
             koji.result.Build,
             koji.tag.Build,
             koji.result.Task,
@@ -187,6 +191,9 @@ class Parser:
                 Parser.parse_openscanhub_task_started_event,
                 Parser.parse_commit_comment_event,
                 Parser.parse_pagure_pull_request_event,
+                Parser.parse_forgejo_push_event,
+                Parser.parse_forgejo_pr_event,
+                Parser.parse_forgejo_comment_event,
             )
         ):
             if response:
@@ -282,6 +289,11 @@ class Parser:
     def parse_pr_event(event) -> Optional[github.pr.Action]:
         """Look into the provided event and see if it's one for a new github PR."""
         if not event.get("pull_request"):
+            return None
+        
+        # Skip Forgejo events - they should be handled by parse_forgejo_pr_event
+        repository_url = nested_get(event, "repository", "html_url") or ""
+        if "forgejo.org" in repository_url:
             return None
 
         pr_id = event.get("number")
@@ -523,6 +535,11 @@ class Parser:
         """
         Look into the provided event and see if it's one for a new push to the github branch.
         """
+        # Skip Forgejo events - they should be handled by parse_forgejo_push_event
+        repository_url = nested_get(event, "repository", "html_url") or ""
+        if "forgejo.org" in repository_url:
+            return None
+            
         raw_ref = event.get("ref")
         before = event.get("before")
         pusher = nested_get(event, "pusher", "name")
@@ -591,6 +608,11 @@ class Parser:
         # but it's needed when called from parse_event().
         if not nested_get(event, "issue", "pull_request"):
             return None
+        
+        # Skip Forgejo events - they should be handled by parse_forgejo_comment_event
+        repository_url = nested_get(event, "repository", "html_url") or ""
+        if "forgejo.org" in repository_url:
+            return None
 
         pr_id = nested_get(event, "issue", "number")
         action = event.get("action")
@@ -642,6 +664,11 @@ class Parser:
         # This check is redundant when the method is called from parse_github_comment_event(),
         # but it's needed when called from parse_event().
         if nested_get(event, "issue", "pull_request"):
+            return None
+        
+        # Skip Forgejo events - they should be handled by parse_forgejo_comment_event
+        repository_url = nested_get(event, "repository", "html_url") or ""
+        if "forgejo.org" in repository_url:
             return None
 
         issue_id = nested_get(event, "issue", "number")
@@ -1859,7 +1886,7 @@ class Parser:
         raw_ref = event.get("ref")
         before = event.get("before")
         after = event.get("after")
-        pusher = nested_get(event, "pusher", "login") or nested_get(event, "pusher", "name")
+        pusher = nested_get(event, "pusher", "login")
 
         if not (raw_ref and after and before and pusher):
             return None
@@ -1872,12 +1899,12 @@ class Parser:
 
         # Number of commits introduced by this push
         commits = event.get("commits") or []
-        num_commits = len(commits)
+        num_commits = event.get("total_commits")
 
         # Strip the ref prefix to get the branch/tag name
         _, ref_type, ref_name = raw_ref.split("/", 2)
-        if ref_type != "heads":
-            logger.debug(f"Forgejo push event ignored – not a branch push ('{raw_ref}')")
+        if ref_type not in ("heads", "tags"):
+            logger.debug(f"Forgejo push event ignored – not a branch or tag push ('{raw_ref}')")
             return None
 
         logger.info(
@@ -1924,7 +1951,7 @@ class Parser:
             return None
 
         pr_id = pr.get("number")
-        actor = event.get("sender", {}).get("login")
+        actor = nested_get(event, "pull_request", "user", "login")
         repo = event.get("repository", {})
         base = pr.get("base")
         head = pr.get("head")
@@ -1932,11 +1959,11 @@ class Parser:
 
         # Check all required nested fields
         try:
-            base_repo_namespace = base["repo"]["owner"]["login"]
-            base_repo_name = base["repo"]["name"]
-            base_ref = base["ref"]
-            target_repo_namespace = head["repo"]["owner"]["login"]
-            target_repo_name = head["repo"]["name"]
+            target_repo_namespace = base["repo"]["owner"]["login"]
+            target_repo_name = base["repo"]["name"]
+            base_ref = head["sha"]
+            base_repo_namespace = head["repo"]["owner"]["login"]
+            base_repo_name = head["repo"]["name"]
             project_url = repo["html_url"]
             commit_sha = head["sha"]
         except (TypeError, KeyError):
@@ -1953,7 +1980,7 @@ class Parser:
             target_repo_name=target_repo_name,
             project_url=project_url,
             commit_sha=commit_sha,
-            commit_sha_before=event.get("before", ""),  # Optional, might be empty
+            commit_sha_before=event.get("before", ""),
             actor=actor,
             body=body,
         )
@@ -1972,8 +1999,7 @@ class Parser:
 
         # Only treat as PR if 'pull_request' is present and not None
         issue_dict = event.get("issue", {})
-        is_pr = "pull_request" in issue_dict and issue_dict["pull_request"] is not None
-
+        is_pr = issue_dict.get("pull_request") is not None
         comment = nested_get(event, "comment", "body")
         comment_id = nested_get(event, "comment", "id")
         logger.info(
@@ -1981,11 +2007,18 @@ class Parser:
             f"comment: {comment!r} id#{comment_id} {action!r} event."
         )
 
-        base_repo_namespace = nested_get(event, "issue", "user", "login")
-        base_repo_name = nested_get(event, "repository", "name")
-
         user_login = nested_get(event, "comment", "user", "login")
-        target_repo_namespace = nested_get(event, "repository", "owner", "login")
+
+        if is_pr:
+            # For PR comments, extract repo info from pull_request section
+            base_repo_namespace = nested_get(event, "pull_request", "head", "repo", "owner", "login")
+            base_repo_name = nested_get(event, "pull_request", "head", "repo", "name")
+            target_repo_namespace = nested_get(event, "pull_request", "base", "repo", "owner", "login")
+        else:
+            # For issue comments, extract from repository section
+            base_repo_namespace = nested_get(event, "repository", "owner", "login")
+            base_repo_name = nested_get(event, "repository", "name")
+            target_repo_namespace = nested_get(event, "repository", "owner", "login")
 
         target_repo_name = nested_get(event, "repository", "name")
         https_url = nested_get(event, "repository", "html_url")
@@ -2015,6 +2048,9 @@ class Parser:
                 comment_id=comment_id,
                 commit_sha=None,
             )
+        # For issue comments, get the default branch
+        default_branch = nested_get(event, "repository", "default_branch") or "main"
+        
         return forgejo.issue.Comment(
             action=IssueCommentAction[action],
             issue_id=issue_id,
@@ -2026,7 +2062,7 @@ class Parser:
             comment=comment,
             comment_id=comment_id,
             tag_name="",
-            base_ref="",
+            base_ref=default_branch,
             dist_git_project_url=None,
         )
 
