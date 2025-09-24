@@ -102,6 +102,36 @@ class Parser:
     """
 
     @staticmethod
+    def is_forgejo_event(event: dict) -> bool:
+        """
+        Detect if an event is from Forgejo based on platform-specific fields.
+        Forgejo events have additional fields that GitHub events don't have.
+        """
+        # Check for Forgejo-specific fields in user objects
+        def has_forgejo_user_fields(user_obj):
+            if not isinstance(user_obj, dict):
+                return False
+            forgejo_fields = {
+                "login_name", "source_id", "full_name", "is_admin", 
+                "last_login", "created", "restricted", "active", 
+                "prohibit_login", "location", "pronouns", "website", 
+                "description", "visibility", "followers_count", 
+                "following_count", "starred_repos_count", "username"
+            }
+            return any(field in user_obj for field in forgejo_fields)
+        
+        if has_forgejo_user_fields(event.get("user")):
+            return True
+        if has_forgejo_user_fields(nested_get(event, "pull_request", "user")):
+            return True
+        if has_forgejo_user_fields(nested_get(event, "comment", "user")):
+            return True
+        if has_forgejo_user_fields(nested_get(event, "issue", "user")):
+            return True
+        
+        return False
+
+    @staticmethod
     def parse_event(
         event: dict,
     ) -> Optional[
@@ -159,6 +189,20 @@ class Parser:
             logger.warning("No event to process!")
             return None
 
+        # Check if this is a Forgejo event and prioritize Forgejo parsers
+        is_forgejo = Parser._is_forgejo_event(event)
+        
+        if is_forgejo:
+            forgejo_parsers = (
+                Parser.parse_forgejo_push_event,
+                Parser.parse_forgejo_pr_event,
+                Parser.parse_forgejo_comment_event,
+            )
+            for parser in forgejo_parsers:
+                response = parser(event)
+                if response:
+                    return response
+        
         for response in (
             parser(event)
             for parser in (
@@ -289,11 +333,6 @@ class Parser:
     def parse_pr_event(event) -> Optional[github.pr.Action]:
         """Look into the provided event and see if it's one for a new github PR."""
         if not event.get("pull_request"):
-            return None
-        
-        # Skip Forgejo events - they should be handled by parse_forgejo_pr_event
-        repository_url = nested_get(event, "repository", "html_url") or ""
-        if "forgejo.org" in repository_url:
             return None
 
         pr_id = event.get("number")
@@ -535,11 +574,6 @@ class Parser:
         """
         Look into the provided event and see if it's one for a new push to the github branch.
         """
-        # Skip Forgejo events - they should be handled by parse_forgejo_push_event
-        repository_url = nested_get(event, "repository", "html_url") or ""
-        if "forgejo.org" in repository_url:
-            return None
-            
         raw_ref = event.get("ref")
         before = event.get("before")
         pusher = nested_get(event, "pusher", "name")
@@ -609,11 +643,6 @@ class Parser:
         if not nested_get(event, "issue", "pull_request"):
             return None
         
-        # Skip Forgejo events - they should be handled by parse_forgejo_comment_event
-        repository_url = nested_get(event, "repository", "html_url") or ""
-        if "forgejo.org" in repository_url:
-            return None
-
         pr_id = nested_get(event, "issue", "number")
         action = event.get("action")
         if action not in {"created", "edited"} or not pr_id:
@@ -665,12 +694,6 @@ class Parser:
         # but it's needed when called from parse_event().
         if nested_get(event, "issue", "pull_request"):
             return None
-        
-        # Skip Forgejo events - they should be handled by parse_forgejo_comment_event
-        repository_url = nested_get(event, "repository", "html_url") or ""
-        if "forgejo.org" in repository_url:
-            return None
-
         issue_id = nested_get(event, "issue", "number")
         action = event.get("action")
         if action != "created" or not issue_id:
@@ -1936,7 +1959,6 @@ class Parser:
         Parse Forgejo PR action events, only triggering for relevant actions.
         Supported actions: 'opened', 'reopened', 'synchronize'.
         Skips others like 'closed'.
-
         """
         action_str = event.get("action")
         # Only trigger for these actions
@@ -2023,6 +2045,9 @@ class Parser:
         target_repo_name = nested_get(event, "repository", "name")
         https_url = nested_get(event, "repository", "html_url")
 
+        base_ref = nested_get(event, "pull_request", "head", "ref")
+        commit_sha = nested_get(event, "pull_request", "head", "sha")
+
         if not (
             base_repo_name and base_repo_namespace and target_repo_name and target_repo_namespace
         ):
@@ -2037,7 +2062,7 @@ class Parser:
             return forgejo.pr.Comment(
                 action=PullRequestCommentAction[action],
                 pr_id=issue_id,
-                base_ref="",
+                base_ref=base_ref,
                 base_repo_namespace=base_repo_namespace,
                 base_repo_name=base_repo_name,
                 target_repo_namespace=target_repo_namespace,
@@ -2046,7 +2071,7 @@ class Parser:
                 actor=user_login,
                 comment=comment,
                 comment_id=comment_id,
-                commit_sha=None,
+                commit_sha=commit_sha,
             )
         # For issue comments, get the default branch
         default_branch = nested_get(event, "repository", "default_branch") or "main"

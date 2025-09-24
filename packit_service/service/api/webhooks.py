@@ -45,6 +45,14 @@ ping_payload_gitlab = ns.model(
     },
 )
 
+ping_payload_forgejo = ns.model(
+    "Forgejo webhook ping",
+    {
+        "zen": fields.String(required=False),
+        "hook_id": fields.String(required=False),
+        "hook": fields.String(required=False),
+    },
+)
 
 github_webhook_calls = Counter(
     "github_webhook_calls",
@@ -308,6 +316,7 @@ class GitlabWebhook(Resource):
         git_http_url = project_data.get("git_http_url") or project_data["http_url"]
         parsed_url = parse_git_repo(potential_url=git_http_url)
 
+        # "repo_name" might be missing in token_decoded if the token is for group/namespace
         if token_decoded["namespace"] != parsed_url.namespace or (
             "repo_name" in token_decoded and token_decoded["repo_name"] != parsed_url.repo
         ):
@@ -344,6 +353,13 @@ class GitlabWebhook(Resource):
 
         logger.debug(f"{event_type} {' (not interested)' if not _interested else ''}")
         return _interested
+
+
+forgejo_webhook_calls = Counter(
+    "forgejo_webhook_calls",
+    "Number of times the Forgejo webhook is called",
+    ["result", "process_id"],
+)
 
 
 @ns.route("/forgejo")
@@ -446,7 +462,7 @@ class ForgejoWebhook(Resource):
             "release": action == "published",
             "issues": action in {"opened", "edited", "closed", "reopened"},
             "issue_comment": action in {"created", "edited"},
-            "pull_request": action in {"opened", "edited", "closed", "reopened", "synchronize"},
+            "pull_request": action in {"opened", "reopened", "synchronize"},
         }
 
         _interested = interests.get(event or "", False)
