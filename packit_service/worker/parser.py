@@ -139,6 +139,8 @@ class Parser:
             or has_forgejo_user_fields(nested_get(event, "pull_request", "user"))
             or has_forgejo_user_fields(nested_get(event, "comment", "user"))
             or has_forgejo_user_fields(nested_get(event, "issue", "user"))
+            or has_forgejo_user_fields(event.get("pusher"))
+            or has_forgejo_user_fields(event.get("sender"))
         )
 
     @staticmethod
@@ -245,9 +247,6 @@ class Parser:
                 Parser.parse_openscanhub_task_started_event,
                 Parser.parse_commit_comment_event,
                 Parser.parse_pagure_pull_request_event,
-                Parser.parse_forgejo_push_event,
-                Parser.parse_forgejo_pr_event,
-                Parser.parse_forgejo_comment_event,
             )
         ):
             if response:
