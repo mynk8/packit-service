@@ -107,29 +107,39 @@ class Parser:
         Detect if an event is from Forgejo based on platform-specific fields.
         Forgejo events have additional fields that GitHub events don't have.
         """
+
         # Check for Forgejo-specific fields in user objects
         def has_forgejo_user_fields(user_obj):
             if not isinstance(user_obj, dict):
                 return False
             forgejo_fields = {
-                "login_name", "source_id", "full_name", "is_admin", 
-                "last_login", "created", "restricted", "active", 
-                "prohibit_login", "location", "pronouns", "website", 
-                "description", "visibility", "followers_count", 
-                "following_count", "starred_repos_count", "username"
+                "login_name",
+                "source_id",
+                "full_name",
+                "is_admin",
+                "last_login",
+                "created",
+                "restricted",
+                "active",
+                "prohibit_login",
+                "location",
+                "pronouns",
+                "website",
+                "description",
+                "visibility",
+                "followers_count",
+                "following_count",
+                "starred_repos_count",
+                "username",
             }
             return any(field in user_obj for field in forgejo_fields)
-        
-        if has_forgejo_user_fields(event.get("user")):
-            return True
-        if has_forgejo_user_fields(nested_get(event, "pull_request", "user")):
-            return True
-        if has_forgejo_user_fields(nested_get(event, "comment", "user")):
-            return True
-        if has_forgejo_user_fields(nested_get(event, "issue", "user")):
-            return True
-        
-        return False
+
+        return (
+            has_forgejo_user_fields(event.get("user"))
+            or has_forgejo_user_fields(nested_get(event, "pull_request", "user"))
+            or has_forgejo_user_fields(nested_get(event, "comment", "user"))
+            or has_forgejo_user_fields(nested_get(event, "issue", "user"))
+        )
 
     @staticmethod
     def parse_event(
@@ -190,8 +200,8 @@ class Parser:
             return None
 
         # Check if this is a Forgejo event and prioritize Forgejo parsers
-        is_forgejo = Parser._is_forgejo_event(event)
-        
+        is_forgejo = Parser.is_forgejo_event(event)
+
         if is_forgejo:
             forgejo_parsers = (
                 Parser.parse_forgejo_push_event,
@@ -199,10 +209,10 @@ class Parser:
                 Parser.parse_forgejo_comment_event,
             )
             for parser in forgejo_parsers:
-                response = parser(event)
-                if response:
-                    return response
-        
+                forgejo_response = parser(event)
+                if forgejo_response:
+                    return forgejo_response
+
         for response in (
             parser(event)
             for parser in (
@@ -642,7 +652,7 @@ class Parser:
         # but it's needed when called from parse_event().
         if not nested_get(event, "issue", "pull_request"):
             return None
-        
+
         pr_id = nested_get(event, "issue", "number")
         action = event.get("action")
         if action not in {"created", "edited"} or not pr_id:
@@ -1921,7 +1931,6 @@ class Parser:
             return None
 
         # Number of commits introduced by this push
-        commits = event.get("commits") or []
         num_commits = event.get("total_commits")
 
         # Strip the ref prefix to get the branch/tag name
@@ -2033,9 +2042,13 @@ class Parser:
 
         if is_pr:
             # For PR comments, extract repo info from pull_request section
-            base_repo_namespace = nested_get(event, "pull_request", "head", "repo", "owner", "login")
+            base_repo_namespace = nested_get(
+                event, "pull_request", "head", "repo", "owner", "login"
+            )
             base_repo_name = nested_get(event, "pull_request", "head", "repo", "name")
-            target_repo_namespace = nested_get(event, "pull_request", "base", "repo", "owner", "login")
+            target_repo_namespace = nested_get(
+                event, "pull_request", "base", "repo", "owner", "login"
+            )
         else:
             # For issue comments, extract from repository section
             base_repo_namespace = nested_get(event, "repository", "owner", "login")
@@ -2075,7 +2088,7 @@ class Parser:
             )
         # For issue comments, get the default branch
         default_branch = nested_get(event, "repository", "default_branch") or "main"
-        
+
         return forgejo.issue.Comment(
             action=IssueCommentAction[action],
             issue_id=issue_id,
